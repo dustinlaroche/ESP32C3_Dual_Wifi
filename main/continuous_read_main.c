@@ -1,5 +1,8 @@
 #include <string.h>
 #include <stdio.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -17,11 +20,27 @@
 #include "soc/soc_caps.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "dport_access.h"
+#include "esp_event.h"
+#include "esp_log.h"
+
+#include "lwip/err.h"
+#include "lwip/sys.h"
+
+#include <string.h>
+#include <sys/unistd.h>
+#include <sys/stat.h>
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdmmc_types.h"
+#include "driver/sdmmc_host.h"
 
 
+
+// 256,000 bps is the USB interface baud rate. Possible Decimation factor!
 
 #define UART_NUM UART_NUM_0
-#define BAUD_RATE 115200
+#define BAUD_RATE 4000000
 
 #define EXAMPLE_ADC_UNIT                    ADC_UNIT_1
 #define _EXAMPLE_ADC_UNIT_STR(unit)         #unit
@@ -40,13 +59,14 @@
 #define EXAMPLE_ADC_GET_DATA(p_data)        ((p_data)->type2.data)
 #endif
 
-#define EXAMPLE_READ_LEN                    256
+#define EXAMPLE_READ_LEN                    1024
 
 #if CONFIG_IDF_TARGET_ESP32
 static adc_channel_t channel[2] = {ADC_CHANNEL_6, ADC_CHANNEL_7};
 #else
 static adc_channel_t channel[2] = {ADC_CHANNEL_0, ADC_CHANNEL_1};
 #endif
+
 
 static TaskHandle_t s_task_handle;
 static const char *TAG = "EXAMPLE";
@@ -56,24 +76,16 @@ static const char *TAG = "EXAMPLE";
 static bool IRAM_ATTR s_conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t *edata, void *user_data)
 {
     BaseType_t mustYield = pdFALSE;
-    //Notify that ADC continuous driver has done enough number of conversions
+
+    // Notify that ADC continuous driver has done enough number of conversions
     vTaskNotifyGiveFromISR(s_task_handle, &mustYield);
 
     return (mustYield == pdTRUE);
 }
 
-static void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc_continuous_handle_t *out_handle)
-{
-    /*
-    gpio_config_t gpio_config = {
-        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pin_bit_mask = 1 << GPIO_NUM_3,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    */
 
+static void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc_continuous_handle_t *out_handle)
+{  
     adc_continuous_handle_t handle = NULL;
 
     adc_continuous_handle_cfg_t adc_config = {
@@ -83,23 +95,10 @@ static void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc
     ESP_ERROR_CHECK(adc_continuous_new_handle(&adc_config, &handle));
 
     adc_continuous_config_t dig_cfg = {
-        .sample_freq_hz = 1000000,
+        .sample_freq_hz = 83333,
         .conv_mode = EXAMPLE_ADC_CONV_MODE,
         .format = EXAMPLE_ADC_OUTPUT_TYPE,
     };
-
-    /*
-    adc_monitor_handle_t monitor_handle = NULL;
-    const adc_monitor_config_t monitor_config = {
-        .adc_unit = EXAMPLE_ADC_UNIT,
-        .channel = channel,
-        .h_threshold = 4000,
-        .l_threshold = 30
-    };
-    //adc_monitor_register_callbacks();
-    adc_new_continuous_monitor(handle, &monitor_config, &monitor_handle);
-    adc_continuous_monitor_enable(monitor_handle);
-    */
 
     adc_digi_pattern_config_t adc_pattern[SOC_ADC_PATT_LEN_MAX] = {0};
     dig_cfg.pattern_num = channel_num;
@@ -122,33 +121,19 @@ static void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc
 
 void app_main(void)
 {
-    /*
-    uart_config_t uart_config = {
-        .baud_rate = BAUD_RATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB,
-    };
-
-    uart_driver_install(UART_NUM, 256, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM, &uart_config);
-    const char* message = "Today is Tuesday, May 21, 2024 and here are the results:\r\n";
-    uart_write_bytes(UART_NUM, message, strlen(message));
-    */
+    uart_set_baudrate(UART_NUM_0, 4000000);
 
     esp_err_t ret;
     uint32_t ret_num = 0;
     uint8_t result[EXAMPLE_READ_LEN] = {0};
-    memset(result, 0xcc, EXAMPLE_READ_LEN);
+    // memset(result, 0xcc, EXAMPLE_READ_LEN);
 
     s_task_handle = xTaskGetCurrentTaskHandle();
 
     adc_continuous_handle_t handle = NULL;
     continuous_adc_init(channel, sizeof(channel) / sizeof(adc_channel_t), &handle);
 
-    
+    /*    
     adc_iir_filter_handle_t iir_filter_handle = NULL;
     adc_continuous_iir_filter_config_t iir_filter_config[2];
     for (int i = 0; i < 2; i++) {
@@ -158,14 +143,15 @@ void app_main(void)
     }
     adc_new_continuous_iir_filter(handle, &iir_filter_config, &iir_filter_handle);
     adc_continuous_iir_filter_enable(iir_filter_handle);
-    
+    */
 
+    
     adc_continuous_evt_cbs_t cbs = {
         .on_conv_done = s_conv_done_cb,
     };
-
     ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(handle, &cbs, NULL));
     ESP_ERROR_CHECK(adc_continuous_start(handle));
+
 
     while (1) {
         /**
@@ -181,19 +167,21 @@ void app_main(void)
         char unit[] = EXAMPLE_ADC_UNIT_STR(EXAMPLE_ADC_UNIT);
 
         while (1) {
+            // ret = adc_continuous_read(handle, result, EXAMPLE_READ_LEN, &ret_num, 0);
             ret = adc_continuous_read(handle, result, EXAMPLE_READ_LEN, &ret_num, 0);
+
 
             if (ret == ESP_OK) {
                 for (int i = 0; i < ret_num; i += SOC_ADC_DIGI_RESULT_BYTES) {
                     adc_digi_output_data_t *p = (adc_digi_output_data_t*)&result[i];
                     uint32_t chan_num = EXAMPLE_ADC_GET_CHANNEL(p);
-                    uint32_t data = EXAMPLE_ADC_GET_DATA(p);
+                    uint16_t data = EXAMPLE_ADC_GET_DATA(p);
                     if (chan_num < SOC_ADC_CHANNEL_NUM(EXAMPLE_ADC_UNIT)) {
                         if (chan_num == ADC_CHANNEL_0 || chan_num == ADC_CHANNEL_1) {
                             if (chan_num == ADC_CHANNEL_0) {
-                                printf("%ld,", data);
+                               printf("%hu ,", data);
                             } else {
-                                printf("%ld \n", data);
+                                printf("%hu\n", data);
                             }
                         }
                     } 
@@ -206,13 +194,12 @@ void app_main(void)
                 vTaskDelay(1);
             } else if (ret == ESP_ERR_TIMEOUT) {
                 //We try to read `EXAMPLE_READ_LEN` until API returns timeout, which means there's no available data
-                break;
+                //break;
             }
         }
     }
 
     ESP_ERROR_CHECK(adc_continuous_stop(handle));
     ESP_ERROR_CHECK(adc_continuous_deinit(handle));
-
 }
 
