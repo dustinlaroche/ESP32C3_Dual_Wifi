@@ -67,6 +67,8 @@ static adc_channel_t channel[2] = {ADC_CHANNEL_6, ADC_CHANNEL_7};
 static adc_channel_t channel[2] = {ADC_CHANNEL_0, ADC_CHANNEL_1};
 #endif
 
+#define DECIMATION_FACTOR 4  // Adjust this factor as needed
+
 
 static TaskHandle_t s_task_handle;
 static const char *TAG = "EXAMPLE";
@@ -167,34 +169,52 @@ void app_main(void)
         char unit[] = EXAMPLE_ADC_UNIT_STR(EXAMPLE_ADC_UNIT);
 
         while (1) {
-            // ret = adc_continuous_read(handle, result, EXAMPLE_READ_LEN, &ret_num, 0);
+            int ret;
+            uint8_t result[EXAMPLE_READ_LEN];
+            uint32_t ret_num;
+            
+            // Read ADC values
             ret = adc_continuous_read(handle, result, EXAMPLE_READ_LEN, &ret_num, 0);
 
-
             if (ret == ESP_OK) {
+                // Initialize decimation variables
+                uint16_t sum0 = 0;
+                uint16_t sum1 = 0;
+                int count0 = 0;
+                int count1 = 0;
+
                 for (int i = 0; i < ret_num; i += SOC_ADC_DIGI_RESULT_BYTES) {
                     adc_digi_output_data_t *p = (adc_digi_output_data_t*)&result[i];
                     uint32_t chan_num = EXAMPLE_ADC_GET_CHANNEL(p);
                     uint16_t data = EXAMPLE_ADC_GET_DATA(p);
+
                     if (chan_num < SOC_ADC_CHANNEL_NUM(EXAMPLE_ADC_UNIT)) {
                         if (chan_num == ADC_CHANNEL_0 || chan_num == ADC_CHANNEL_1) {
                             if (chan_num == ADC_CHANNEL_0) {
-                               printf("%hu ,", data);
-                            } else {
-                                printf("%hu\n", data);
+                                sum0 += data;
+                                count0++;
+                                if (count0 == DECIMATION_FACTOR) {
+                                    printf("%hu ,", sum0 / DECIMATION_FACTOR);
+                                    sum0 = 0;
+                                    count0 = 0;
+                                }
+                            } else if (chan_num == ADC_CHANNEL_1) {
+                                sum1 += data;
+                                count1++;
+                                if (count1 == DECIMATION_FACTOR) {
+                                    printf("%hu\n", sum1 / DECIMATION_FACTOR);
+                                    sum1 = 0;
+                                    count1 = 0;
+                                }
                             }
                         }
-                    } 
+                    }
                 }
-                /**
-                * Because printing is slow, so every time you call `ulTaskNotifyTake`, it will immediately return.
-                * To avoid a task watchdog timeout, add a delay here. When you replace the way you process the data,
-                * usually you don't need this delay (as this task will block for a while).
-                */
+
+                // Add a delay to avoid task watchdog timeout due to slow printing
                 vTaskDelay(1);
             } else if (ret == ESP_ERR_TIMEOUT) {
-                //We try to read `EXAMPLE_READ_LEN` until API returns timeout, which means there's no available data
-                //break;
+                // Handle timeout, break out of the loop if needed
             }
         }
     }
@@ -202,4 +222,3 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_continuous_stop(handle));
     ESP_ERROR_CHECK(adc_continuous_deinit(handle));
 }
-
